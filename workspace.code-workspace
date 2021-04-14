@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "..\\TestProject3"
+		},
+		{
+			"name": "EspClockTest",
+			"path": "."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.txt": "cpp"
+		}
+	}
+}

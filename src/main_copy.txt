@@ -1,0 +1,247 @@
+#include <Arduino.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "driver/adc.h"
+#include "esp_adc_cal.h"
+
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_I2CDevice.h>
+
+// SPI
+#include "driver/spi_slave.h"
+#define GPIO_MOSI 23
+#define GPIO_MISO 19
+#define GPIO_SCLK 18
+#define GPIO_CS   05
+
+#define RCV_HOST    VSPI_HOST
+#define DMA_CHAN    2
+
+//OLED pins
+#define OLED_SDA 4
+#define OLED_SCL 15 
+#define OLED_RST 16
+#define SCREEN_WIDTH 128 // OLED display width, in pixels
+#define SCREEN_HEIGHT 64 // OLED display height, in pixels
+
+//Use adc2_vref_to_gpio() to obtain a better estimate
+#define DEFAULT_VREF    1100        
+//Multisampling
+#define NO_OF_SAMPLES   64          
+
+// ADC Constants
+static esp_adc_cal_characteristics_t *adc_chars;
+//GPIO34 if ADC1, GPIO14 if ADC2
+static const adc2_channel_t channel = ADC2_CHANNEL_4;    
+static const adc_bits_width_t width = ADC_WIDTH_BIT_12;
+static const adc_atten_t atten = ADC_ATTEN_DB_11;
+static const adc_unit_t unit = ADC_UNIT_2;
+uint32_t adc_reading = 0;
+
+// Steinhart-Hart Constants
+#define A 0.9243479102e-3
+#define B 1.814402510e-4
+#define C 2.954868853e-7
+#define R2 5040
+#define V_IN 3.3
+// Kelvin to Celsius conversion
+#define K_TO_C 273.15
+float temperature_celsius;
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RST, 100000UL, 100000UL);
+int counter = 0;
+
+// SPI
+uint8_t sendbuf[1];
+uint8_t recvbuf[1];
+spi_slave_transaction_t t;
+esp_err_t ret;
+int n=0;
+
+
+
+void setup() 
+{
+
+  
+
+  Serial.begin(115200);
+  SetupOled();
+  SetupAdc();
+  vTaskDelay(2000 / portTICK_RATE_MS);
+  //xTaskCreate(&HelloTask, "Hello_Task", 4096, NULL, 1, NULL);
+  //xTaskCreate(&AdcTask, "ADC_Task", 4096, NULL, 2, NULL);3
+
+  spi_bus_config_t buscfg={
+      .mosi_io_num=GPIO_MOSI,
+      .miso_io_num=GPIO_MISO,
+      .sclk_io_num=GPIO_SCLK,
+      .quadwp_io_num = -1,
+      .quadhd_io_num = -1,
+      .max_transfer_sz = 16,
+  };
+
+  spi_slave_interface_config_t slvcfg={
+    .spics_io_num=GPIO_CS,
+    .flags=0,
+    .queue_size=3,
+    .mode=1
+  };
+
+  gpio_set_pull_mode((gpio_num_t)GPIO_MOSI, GPIO_PULLUP_ONLY);
+  //gpio_set_pull_mode((gpio_num_t)GPIO_MISO, GPIO_PULLUP_ONLY);
+  gpio_set_pull_mode((gpio_num_t)GPIO_SCLK, GPIO_PULLUP_ONLY);
+  gpio_set_pull_mode((gpio_num_t)GPIO_CS, GPIO_PULLUP_ONLY);  
+  
+  //Initialize SPI slave interface
+  ret=spi_slave_initialize(RCV_HOST, &buscfg, &slvcfg, DMA_CHAN);
+  printf("ret: %s\n", esp_err_to_name(ret));
+  assert(ret==ESP_OK);
+
+  
+  
+ /*  memset(recvbuf, 1, 5);
+  memset(&t, 0, sizeof(t));
+
+  //Clear receive buffer, set send buffer to something sane
+  memset(recvbuf, 1, 5);
+  memset(sendbuf, 1, 2); */
+
+  recvbuf[0]=7;
+  sendbuf[0]=9;
+
+  //Set up a transaction of 128 bytes to send/receive
+  t.length=16;
+  t.trans_len=16;
+  t.tx_buffer=sendbuf;
+  t.rx_buffer=recvbuf;
+  printf("sendbuf: %d \n", sendbuf);
+
+  vTaskDelay(1000 / portTICK_RATE_MS); 
+
+  /* printf("Calling spi_slave_queue_trans\n");
+  ret=spi_slave_queue_trans(RCV_HOST, &t, portMAX_DELAY);
+  assert( ret == ESP_OK);
+  printf("Error: %s ",  esp_err_to_name(ret));
+  printf("Received: %s\n", recvbuf);
+  n++; */
+  
+  
+}
+
+void loop() 
+{
+    /* ret=spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
+    assert( ret == ESP_OK);
+    printf("Error: %s ",  esp_err_to_name(ret));
+    printf("Received: %s\n", recvbuf);
+    n++; */
+    sendbuf[0]=9;
+
+    //Set up a transaction of 128 bytes to send/receive
+    t.length=16;
+    t.trans_len=16;
+    t.tx_buffer=sendbuf;
+    t.rx_buffer=recvbuf;
+    printf("Calling spi_slave_transmit\n");
+    ret=spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
+    assert( ret == ESP_OK);
+    printf("Error: %s ",  esp_err_to_name(ret));
+    printf("n: %d\n", n);
+    printf("Received: %d\n", recvbuf[0]);
+    n++;
+}
+
+void AdcTask(void *pvParameter)
+{
+  
+  while(1)
+  {
+    //Multisampling
+    for (int i = 0; i < NO_OF_SAMPLES; i++) {
+        int raw;
+        adc2_get_raw((adc2_channel_t)channel, width, &raw);
+        adc_reading += raw;
+    }
+    adc_reading /= NO_OF_SAMPLES;
+    //Convert adc_reading to voltage in mV
+    uint32_t voltage = esp_adc_cal_raw_to_voltage(adc_reading, adc_chars);
+    
+    ConvertValue(voltage);
+    vTaskDelay(500 / portTICK_RATE_MS);
+  }
+}
+
+void ConvertValue(uint32_t v_out)
+{
+  float thermistor_resistance = R2*((V_IN*1000/v_out)-1);
+  temperature_celsius = 1/(A+B*log(thermistor_resistance)+C*pow(log(thermistor_resistance), 3)) - K_TO_C;
+  printf("%d, %.2f, %.2f\n", v_out, thermistor_resistance, temperature_celsius);
+}
+
+void HelloTask(void *pvParameter)
+{
+  while(1)
+  {
+    char degree = 9;
+    printf("HelloTask called\n");
+    display.clearDisplay();
+    display.setCursor(0, 5);
+    display.print(temperature_celsius);
+    display.drawCircle(97, 5, 4, 1);
+    display.setCursor(105, 5);
+    display.print("C");
+    display.display();
+    vTaskDelay(2000 / portTICK_RATE_MS);
+  }
+}
+
+void SetupAdc()
+{
+  adc2_config_channel_atten((adc2_channel_t)channel, atten);
+  //Characterize ADC
+  adc_chars = (esp_adc_cal_characteristics_t *)calloc(1, sizeof(esp_adc_cal_characteristics_t));
+  esp_adc_cal_value_t val_type = esp_adc_cal_characterize(unit, atten, width, DEFAULT_VREF, adc_chars);
+  if (val_type == ESP_ADC_CAL_VAL_EFUSE_TP) {
+      printf("Characterized using Two Point Value\n");
+  } else if (val_type == ESP_ADC_CAL_VAL_EFUSE_VREF) {
+      printf("Characterized using eFuse Vref\n");
+  } else {
+      printf("Characterized using Default Vref\n");
+  }
+}
+
+void SetupOled()
+{
+  //reset OLED display via software
+  pinMode(OLED_RST, OUTPUT);
+  digitalWrite(OLED_RST, LOW);
+  delay(20);
+  digitalWrite(OLED_RST, HIGH);
+
+  //initialize OLED
+  Wire.begin(OLED_SDA, OLED_SCL);
+  // Address 0x3C for 128x32
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3c, false, false)) { 
+    Serial.println(F("SSD1306 allocation failed"));
+    // Don't proceed, loop forever
+    for(;;); 
+  }
+  
+  display.clearDisplay();
+  display.setTextColor(WHITE);
+  display.setTextSize(2);
+  display.setCursor(0,0);
+  for (int i=0; i< 10; i++)
+  {
+    display.print((char)i);
+  }
+  display.display();
+  vTaskDelay(500 / portTICK_RATE_MS);
+}
