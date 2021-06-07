@@ -15,10 +15,10 @@
 
 // SPI
 #include "driver/spi_slave.h"
-#define GPIO_MOSI 23
-#define GPIO_MISO 19
-#define GPIO_SCLK 18
-#define GPIO_CS   05
+#define GPIO_CS   26 // 05 //c I
+#define GPIO_SCLK 18 // 18 //    I
+#define GPIO_MOSI NULL // Not used 
+#define GPIO_MISO 12 // Re-mapped from GPIO19, see 4.10 IO_MUX Pad List - Table 4-3
 
 #define RCV_HOST    VSPI_HOST
 #define DMA_CHAN    2
@@ -137,6 +137,13 @@ void SetupOLED()
 
 void SetupSPI()
 {
+  /* // Enable Pin Muxing to map the peripheral to their non-regular pins
+  gpio_iomux_in(GPIO_MOSI, VSPID_IN_IDX);
+  gpio_iomux_out(GPIO_MISO, FUNC_GPIO19_VSPIQ, false);
+  gpio_iomux_in(GPIO_SCLK, VSPICLK_IN_IDX);
+  gpio_iomux_in(GPIO_CS, VSPICS0_IN_IDX);
+ */
+
   spi_bus_config_t buscfg={
       .mosi_io_num=GPIO_MOSI,
       .miso_io_num=GPIO_MISO,
@@ -152,6 +159,12 @@ void SetupSPI()
     .queue_size=3,
     .mode=1
   };
+
+  // MISO - Master In Slave Out
+  /* PIN_FUNC_SELECT(GPIO_PIN_MUX_REG[GPIO_MISO], PIN_FUNC_GPIO);
+  gpio_set_direction((gpio_num_t)GPIO_MISO, GPIO_MODE_INPUT_OUTPUT);
+  gpio_iomux_out(GPIO_MISO, HSPIQ_OUT_IDX, 0);
+  gpio_iomux_in(GPIO_MISO, HSPIQ_IN_IDX); */
 
   //Initialize SPI slave interface
   ret=spi_slave_initialize(RCV_HOST, &buscfg, &slvcfg, DMA_CHAN);
@@ -174,6 +187,7 @@ void TaskADC(void *pvParameter)
     for (int i = 0; i < NO_OF_SAMPLES; i++) {
         int raw;
         adc2_get_raw((adc2_channel_t)channel, width, &raw);
+        //raw = adc1_get_raw(channel);
         adc_reading += raw;
     }
     adc_reading /= NO_OF_SAMPLES;
@@ -207,6 +221,7 @@ void TaskSPI(void *pvParameter)
   while(1)
   {
     sendbuf[0]=(uint32_t)(temperature_celsius*100);
+    printf("sendbuf: %d ", sendbuf[0]);
     printf("Calling spi_slave_transmit\n");
     ret=spi_slave_transmit(RCV_HOST, &t, portMAX_DELAY);
     printf("Error: %s ",  esp_err_to_name(ret));
